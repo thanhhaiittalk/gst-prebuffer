@@ -53,3 +53,25 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Ignore CMake build directory
+build/
+build*/
+*/build/
+
+# Ignore CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Ignore compiled objects and libs
+*.o
+*.so
+*.a
+
+# Ignore editor/IDE files
+*.swp
+*.swo
+.DS_Store
+.vscode/
