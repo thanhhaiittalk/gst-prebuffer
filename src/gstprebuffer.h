@@ -9,16 +9,32 @@ G_BEGIN_DECLS
 #define GST_PREBUFFER(obj) \
     (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PREBUFFER, GstPrebuffer))
 
+/* Enum definition */
+typedef enum {
+    PREBUFFER_MODE_DISABLED = 0,
+    PREBUFFER_MODE_PRE_RECORD,
+    PREBUFFER_MODE_RECORD
+} PrebufferMode;
+
 typedef struct _GstPrebuffer {
     GstBaseTransform parent;
 
-    /* empty instance fields */
+    GMutex        lock;
+
+    PrebufferMode mode;          // current mode
+    PrebufferMode pending_mode;  // requested mode (optional but recommended)
+
+    guint         duration_sec;
+
+
 } GstPrebuffer;
 
 typedef struct _GstPrebufferClass {
     GstBaseTransformClass parent_class;
 } GstPrebufferClass;
 
+/* GType for the enum */
+#define PREBUFFER_TYPE_MODE (prebuffer_mode_get_type())
 GType gst_prebuffer_get_type(void);
 
 G_END_DECLS
