@@ -8,6 +8,7 @@ pkg_check_modules(GST REQUIRED gstreamer-1.0 gstreamer-base-1.0)
 # Plugin: libgstprebuffer.so
 add_library(gstprebuffer SHARED
     src/gstprebuffer.c
+    src/frame_ring.c
 )
 
 target_include_directories(gstprebuffer PRIVATE

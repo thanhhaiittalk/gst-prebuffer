@@ -2,6 +2,7 @@
 #define __GST_PREBUFFER_H__
 
 #include <gst/base/gstbasetransform.h>
+#include "frame_ring.h"
 
 G_BEGIN_DECLS
 
@@ -24,8 +25,13 @@ typedef struct _GstPrebuffer {
     PrebufferMode mode;          // current mode
     PrebufferMode pending_mode;  // requested mode (optional but recommended)
 
+    gboolean      flush_pending;   /* need to flush pre-record buffer */
+    gboolean      buffering_enabled;
+
     guint         duration_sec;
 
+    /* ring buffer state */
+    FrameRing ring;
 
 } GstPrebuffer;
 
