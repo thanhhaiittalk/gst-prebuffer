@@ -29,6 +29,9 @@ typedef struct _GstPrebuffer {
     gboolean      buffering_enabled;
 
     guint         duration_sec;
+    gdouble fps;
+
+    gboolean send_eos;
 
     /* ring buffer state */
     FrameRing ring;

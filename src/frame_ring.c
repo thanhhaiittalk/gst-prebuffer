@@ -75,22 +75,15 @@ void frame_ring_push(FrameRing *ring,
 
 GList * frame_ring_get_from_last_keyframe(FrameRing *ring)
 {
-    g_return_val_if_fail(ring != NULL, NULL);
-    g_return_val_if_fail(ring->queue != NULL, NULL);
+    g_return_val_if_fail(ring, NULL);
 
-    if (g_queue_is_empty(ring->queue))
-        return NULL;
+    for (GList *l = g_queue_peek_head_link(ring->queue);
+         l;
+         l = l->next) {
 
-    /* Walk backwards to find LAST keyframe */
-    for (GList *l = g_queue_peek_tail_link(ring->queue);
-         l != NULL;
-         l = l->prev) {
-
-        PrebufferFrame *f = (PrebufferFrame *)l->data;
+        PrebufferFrame *f = l->data;
         if (f->keyframe)
-            return l; /* flush from here forward */
+            return l;
     }
-
-    /* No keyframe → cannot safely decode */
     return NULL;
 }

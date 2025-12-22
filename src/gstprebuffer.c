@@ -48,6 +48,9 @@ static gboolean gst_prebuffer_stop (GstBaseTransform *trans);
 static GstFlowReturn gst_prebuffer_transform_ip(GstBaseTransform *trans,
                                                 GstBuffer *buf);
 static void gst_prebuffer_finalize(GObject *object);
+static gboolean gst_prebuffer_set_caps(GstBaseTransform *trans,
+                       GstCaps *incaps,
+                       GstCaps *outcaps);
 
 
 static void gst_prebuffer_finalize(GObject *object)
@@ -59,9 +62,24 @@ static void gst_prebuffer_finalize(GObject *object)
 
     G_OBJECT_CLASS(gst_prebuffer_parent_class)->finalize(object);
 }
+
+static GstStaticPadTemplate sink_template =
+GST_STATIC_PAD_TEMPLATE(
+    "sink",
+    GST_PAD_SINK,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS_ANY
+);
+
+static GstStaticPadTemplate src_template =
+GST_STATIC_PAD_TEMPLATE(
+    "src",
+    GST_PAD_SRC,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS_ANY
+);
 /* -------------------------- Class Init -------------------------- */
-static void
-gst_prebuffer_class_init(GstPrebufferClass *klass)
+static void gst_prebuffer_class_init(GstPrebufferClass *klass)
 {
     GObjectClass *gobject_class = G_OBJECT_CLASS(klass);
     GstElementClass *element_class = GST_ELEMENT_CLASS(klass);
@@ -71,6 +89,7 @@ gst_prebuffer_class_init(GstPrebufferClass *klass)
     gobject_class->set_property = gst_prebuffer_set_property;
     gobject_class->get_property = gst_prebuffer_get_property;
     gobject_class->finalize = gst_prebuffer_finalize;
+    
     /* ---------- Properties ---------- */
 
     g_object_class_install_property(
@@ -110,16 +129,57 @@ gst_prebuffer_class_init(GstPrebufferClass *klass)
         "Your Name <you@example.com>"
     );
 
+    gst_element_class_add_pad_template(
+        element_class,
+        gst_static_pad_template_get(&sink_template));
+
+    gst_element_class_add_pad_template(
+        element_class,
+        gst_static_pad_template_get(&src_template));
+
     /* ---------- GstBaseTransform ---------- */
 
     /* We decide per-buffer whether to drop or forward */
     base_transform_class->transform_ip = gst_prebuffer_transform_ip;
+    base_transform_class->start = gst_prebuffer_start;
+    base_transform_class->stop  = gst_prebuffer_stop;
+    base_transform_class->set_caps = gst_prebuffer_set_caps;
 
     /* We are not a pure passthrough element */
     base_transform_class->passthrough_on_same_caps = FALSE;
 }
 
+static gboolean gst_prebuffer_set_caps(GstBaseTransform *trans,
+                       GstCaps *incaps,
+                       GstCaps *outcaps)
+{
+    GstPrebuffer *self = GST_PREBUFFER(trans);
+    GstStructure *s;
+    gint num, den;
+    s = gst_caps_get_structure(incaps, 0);
 
+    if (gst_structure_get_fraction(s, "framerate", &num, &den)) {
+
+        if (den > 0) {
+            g_mutex_lock(&self->lock);
+
+            self->fps = (gdouble)num / (gdouble)den;
+
+            /* duration_sec already set */
+            guint max_frames =
+                (guint)(self->duration_sec * self->fps);
+
+            if (max_frames == 0)
+                max_frames = 1;
+
+            frame_ring_deinit(&self->ring);
+            frame_ring_init(&self->ring, max_frames);
+            g_mutex_unlock(&self->lock);
+        }
+    }
+    
+    return TRUE;
+}
 /* -------------------------- Instance Init -------------------------- */
 static void gst_prebuffer_init(GstPrebuffer *self)
 {
@@ -129,12 +189,13 @@ static void gst_prebuffer_init(GstPrebuffer *self)
     self->pending_mode = PREBUFFER_MODE_PRE_RECORD;
 
     self->duration_sec = 30;
+    self->fps = 30.0; 
 
     self->flush_pending = FALSE;
     self->buffering_enabled = TRUE;
-
-    /* 30 seconds @ 30fps ≈ 900 frames (tạm, sẽ refine sau) */
-    frame_ring_init(&self->ring, 900);
+    /* SAFE DEFAULT INIT */
+    frame_ring_init(&self->ring,
+                    self->duration_sec * self->fps);
 
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
 }
@@ -279,13 +340,11 @@ static void gst_prebuffer_apply_mode_transition(GstPrebuffer *self,
          * - reset internal state
          */
 
-        /* TODO:
-         * - signal EOS to downstream mux/filesink
-         *   (usually via gst_pad_push_event)
-         */
+        self->send_eos = TRUE;
 
         /* Reset buffer state */
         /* TODO: clear ring buffer */
+        frame_ring_clear(&self->ring);
 
         self->flush_pending = FALSE;
         self->buffering_enabled = TRUE;
@@ -306,7 +365,8 @@ static void gst_prebuffer_apply_mode_transition(GstPrebuffer *self,
          * - Passthrough only
          */
 
-        /* TODO: clear ring buffer */
+        /* Drop all prebuffered frames */
+        frame_ring_clear(&self->ring);
 
         self->flush_pending = FALSE;
         self->buffering_enabled = FALSE;
@@ -324,8 +384,9 @@ static GstFlowReturn gst_prebuffer_transform_ip(GstBaseTransform *base,
     /* --------------------------------------------------
      * 1. Handle pending mode transitions (streaming thread)
      * -------------------------------------------------- */
+    PrebufferMode cur_mode;
     g_mutex_lock(&self->lock);
-
+    cur_mode = self->mode; // Old mode
     if (self->pending_mode != self->mode) {
         gst_prebuffer_apply_mode_transition(self,
                                              self->mode,
@@ -333,15 +394,12 @@ static GstFlowReturn gst_prebuffer_transform_ip(GstBaseTransform *base,
         self->mode = self->pending_mode;
     }
 
-    /* Snapshot current mode for this buffer */
-    PrebufferMode mode = self->mode;
-
     g_mutex_unlock(&self->lock);
 
     /* --------------------------------------------------
      * 2. Per-buffer data path decision
      * -------------------------------------------------- */
-    switch (mode)
+    switch (cur_mode)
     {
 
     case PREBUFFER_MODE_DISABLED:
@@ -369,7 +427,6 @@ static GstFlowReturn gst_prebuffer_transform_ip(GstBaseTransform *base,
         {
             gboolean keyframe =
                 !GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_DELTA_UNIT);
-
             frame_ring_push(&self->ring, buf, keyframe);
         }
 
@@ -387,25 +444,35 @@ static GstFlowReturn gst_prebuffer_transform_ip(GstBaseTransform *base,
          * - Then forward live buffers normally
          */
 
-           if (self->flush_pending) {
+        if (self->flush_pending) {
+            GList *start =
+                frame_ring_get_from_last_keyframe(&self->ring);
 
-        GList *start =
-            frame_ring_get_from_last_keyframe(&self->ring);
-
-        if (start) {
-            for (GList *l = start; l; l = l->next) {
-                PrebufferFrame *f = l->data;
-
-                gst_pad_push(
-                    GST_BASE_TRANSFORM_SRC_PAD(base),
-                    gst_buffer_ref(f->buffer)
-                );
+            int cf = 0;
+            if (start)
+            {
+                for (GList *l = start; l; l = l->next)
+                {
+                    PrebufferFrame *f = l->data;
+                    cf++;
+                    gst_pad_push(
+                        GST_BASE_TRANSFORM_SRC_PAD(base),
+                        gst_buffer_ref(f->buffer));
+                }
             }
+
+            frame_ring_clear(&self->ring);
+            self->flush_pending = FALSE;
         }
 
-        frame_ring_clear(&self->ring);
-        self->flush_pending = FALSE;
-    }
+        if (self->send_eos)
+        {
+            gst_pad_push_event(
+                GST_BASE_TRANSFORM_SRC_PAD(base),
+                gst_event_new_eos());
+            self->send_eos = FALSE;
+        }
+
 
     return GST_FLOW_OK;
     }
