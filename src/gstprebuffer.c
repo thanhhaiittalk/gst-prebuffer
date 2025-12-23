@@ -448,13 +448,11 @@ static GstFlowReturn gst_prebuffer_transform_ip(GstBaseTransform *base,
             GList *start =
                 frame_ring_get_from_last_keyframe(&self->ring);
 
-            int cf = 0;
             if (start)
             {
                 for (GList *l = start; l; l = l->next)
                 {
                     PrebufferFrame *f = l->data;
-                    cf++;
                     gst_pad_push(
                         GST_BASE_TRANSFORM_SRC_PAD(base),
                         gst_buffer_ref(f->buffer));
