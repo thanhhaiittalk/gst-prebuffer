@@ -29,7 +29,7 @@ static void build_pipeline(const char *outfile, int keyint)
     snprintf(desc, sizeof(desc),
         "videotestsrc is-live=true "
         "! x264enc tune=zerolatency key-int-max=%d "
-        "! h264parse "
+        "! h264parse"
         "! prebuffer name=pb mode=pre-record duration=5 "
         "! mp4mux "
         "! filesink location=%s",
@@ -47,6 +47,40 @@ static void start_pipeline(const char *label)
 
 static void stop_pipeline(void)
 {
+   g_print("-> Stopping... Sending EOS to pipeline.\n");
+
+    /* 1. Send the EOS event to the pipeline source */
+    /* This tells the elements "The stream is finishing", so mp4mux can write the header. */
+    gst_element_send_event(pipeline, gst_event_new_eos());
+
+    /* 2. Wait for the pipeline to finish processing the EOS */
+    GstBus *bus = gst_element_get_bus(pipeline);
+    
+    /* We wait up to 2 seconds. This block ensures the application doesn't 
+     * quit before mp4mux has finished writing the file to disk. */
+    GstMessage *msg = gst_bus_timed_pop_filtered(bus, 
+        2 * GST_SECOND, 
+        GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
+
+    if (msg) {
+        if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
+            GError *err;
+            gchar *debug;
+            gst_message_parse_error(msg, &err, &debug);
+            g_print("Error received: %s\n", err->message);
+            g_error_free(err);
+            g_free(debug);
+        } else {
+            g_print("EOS Received. File finalized successfully.\n");
+        }
+        gst_message_unref(msg);
+    } else {
+        g_print("Warning: EOS timeout! File might be incomplete (moov atom missing).\n");
+    }
+
+    gst_object_unref(bus);
+
+    /* 3. NOW it is safe to tear down the pipeline */
     gst_element_set_state(pipeline, GST_STATE_NULL);
 }
 

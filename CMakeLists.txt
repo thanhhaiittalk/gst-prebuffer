@@ -42,3 +42,15 @@ target_include_directories(prebuffer_demo PRIVATE
 target_link_libraries(prebuffer_demo
     ${GST_LIBRARIES}
 )
+
+add_executable(test_prebuffer
+    example/test_prebuffer.c
+)
+
+target_include_directories(test_prebuffer PRIVATE
+    ${GST_INCLUDE_DIRS}
+)
+
+target_link_libraries(test_prebuffer
+    ${GST_LIBRARIES}
+)

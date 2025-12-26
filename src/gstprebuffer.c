@@ -193,6 +193,8 @@ static void gst_prebuffer_init(GstPrebuffer *self)
 
     self->flush_pending = FALSE;
     self->buffering_enabled = TRUE;
+    self->seen_keyframe = FALSE;
+
     /* SAFE DEFAULT INIT */
     frame_ring_init(&self->ring,
                     self->duration_sec * self->fps);
@@ -274,6 +276,7 @@ static gboolean gst_prebuffer_start(GstBaseTransform *trans)
 
     self->flush_pending = FALSE;
     self->buffering_enabled = (self->mode == PREBUFFER_MODE_PRE_RECORD);
+    self->seen_keyframe = FALSE;
 
     frame_ring_clear(&self->ring);
 
@@ -306,7 +309,7 @@ static void gst_prebuffer_apply_mode_transition(GstPrebuffer *self,
     /* No-op safety */
     if (old_mode == new_mode)
         return;
-
+    g_print("gst_prebuffer_apply_mode_transition\n");
     /* --------------------------------------------------
      * PRE_RECORD → RECORD
      * -------------------------------------------------- */
@@ -336,11 +339,9 @@ static void gst_prebuffer_apply_mode_transition(GstPrebuffer *self,
          * Recording stopped.
          *
          * One-time actions only:
-         * - finalize downstream (EOS or equivalent)
          * - reset internal state
          */
 
-        self->send_eos = TRUE;
 
         /* Reset buffer state */
         /* TODO: clear ring buffer */
@@ -377,103 +378,65 @@ static void gst_prebuffer_apply_mode_transition(GstPrebuffer *self,
 
 /* -------------------------- transform_ip() -------------------------- */
 static GstFlowReturn gst_prebuffer_transform_ip(GstBaseTransform *base,
-                           GstBuffer        *buf)
-{
+                                                GstBuffer *buf)
+{   
+   
     GstPrebuffer *self = GST_PREBUFFER(base);
-
-    /* --------------------------------------------------
-     * 1. Handle pending mode transitions (streaming thread)
-     * -------------------------------------------------- */
     PrebufferMode cur_mode;
+
+    /* 1. Handle Transitions */
     g_mutex_lock(&self->lock);
-    cur_mode = self->mode; // Old mode
     if (self->pending_mode != self->mode) {
-        gst_prebuffer_apply_mode_transition(self,
-                                             self->mode,
-                                             self->pending_mode);
+        gst_prebuffer_apply_mode_transition(self, self->mode, self->pending_mode);
         self->mode = self->pending_mode;
     }
-
+    cur_mode = self->mode;
     g_mutex_unlock(&self->lock);
 
-    /* --------------------------------------------------
-     * 2. Per-buffer data path decision
-     * -------------------------------------------------- */
-    switch (cur_mode)
+    /* 2. Track Keyframes */
+    gboolean is_keyframe = !GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_DELTA_UNIT);
+    if (is_keyframe) self->seen_keyframe = TRUE;
+
+    if (self->seen_keyframe)
     {
+        GstPad *srcpad = GST_BASE_TRANSFORM_SRC_PAD(base);
 
-    case PREBUFFER_MODE_DISABLED:
-        /*
-         * Passthrough mode
-         *
-         * - Prebuffer fully disabled
-         * - No buffering
-         * - No flushing
-         * - Just forward buffer downstream
-         */
-        return GST_FLOW_OK;
+        /* Push the final frame of the recording */
+        gst_pad_push(srcpad, gst_buffer_ref(buf));
+    }
 
-    case PREBUFFER_MODE_PRE_RECORD:
-        /*
-         * Pre-record mode
-         *
-         * - Continuously buffer encoded frames
-         * - Maintain rolling window (duration-based)
-         * - Track keyframes
-         * - Downstream must see nothing
-         */
+    /* 4. Handle Current Mode */
+    switch (cur_mode) {
+        case PREBUFFER_MODE_DISABLED:
 
-        if (self->buffering_enabled)
-        {
-            gboolean keyframe =
-                !GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_DELTA_UNIT);
-            frame_ring_push(&self->ring, buf, keyframe);
-        }
+            break; 
 
-        /* Consume buffer, do NOT forward */
-        return GST_BASE_TRANSFORM_FLOW_DROPPED;
+        case PREBUFFER_MODE_PRE_RECORD:
 
-    case PREBUFFER_MODE_RECORD:
-        /*
-         * Record mode
-         *
-         * - If flush_pending is set:
-         *     flush pre-record buffers FIRST
-         *     (from nearest preceding keyframe)
-         *
-         * - Then forward live buffers normally
-         */
+            if (self->buffering_enabled) {
+                frame_ring_push(&self->ring, buf, is_keyframe);
+            }
+            return GST_BASE_TRANSFORM_FLOW_DROPPED;
 
-        if (self->flush_pending) {
-            GList *start =
-                frame_ring_get_from_last_keyframe(&self->ring);
-
-            if (start)
-            {
-                for (GList *l = start; l; l = l->next)
-                {
-                    PrebufferFrame *f = l->data;
-                    gst_pad_push(
-                        GST_BASE_TRANSFORM_SRC_PAD(base),
-                        gst_buffer_ref(f->buffer));
+        case PREBUFFER_MODE_RECORD:
+            /* Flush pending buffers if needed */
+            if (self->flush_pending) {
+                GList *start = frame_ring_get_from_last_keyframe(&self->ring);
+                if (start) {
+                    for (GList *l = start; l; l = l->next) {
+                        PrebufferFrame *f = l->data;
+                        gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(base), 
+                                     gst_buffer_ref(f->buffer));
+                    }
                 }
+                frame_ring_clear(&self->ring);
+                self->flush_pending = FALSE;
             }
 
-            frame_ring_clear(&self->ring);
-            self->flush_pending = FALSE;
-        }
-
-        if (self->send_eos)
-        {
-            gst_pad_push_event(
-                GST_BASE_TRANSFORM_SRC_PAD(base),
-                gst_event_new_eos());
-            self->send_eos = FALSE;
-        }
-
+            break;
+    }
 
     return GST_FLOW_OK;
-    }
 }
 
 /* -------------------------- Plugin init -------------------------- */
