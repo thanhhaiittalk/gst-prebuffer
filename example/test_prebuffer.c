@@ -27,7 +27,7 @@ static void build_pipeline(const char *outfile, int keyint)
     gchar desc[1024];
 
     snprintf(desc, sizeof(desc),
-       "videotestsrc is-live=true pattern=ball "
+       "videotestsrc is-live=true pattern=snow "
         /* Force Full HD and 30 FPS here: */
         "! video/x-raw,width=720,height=540,framerate=30/1 "
        /* CHANGE 1: force 'aud' (Access Unit Delimiter) to help player find boundaries */
@@ -221,9 +221,12 @@ static void build_reference_pipeline(const char *outfile, int keyint)
 
     /* Note: We removed '! prebuffer ...' and linked h264parse directly to mp4mux */
     snprintf(desc, sizeof(desc),
-       "videotestsrc is-live=true pattern=ball "
-        "! video/x-raw,width=720,height=540,framerate=30/1 "
-        "! x264enc tune=zerolatency key-int-max=%d speed-preset=ultrafast "
+       "videotestsrc is-live=true pattern=snow "
+        "! video/x-raw,width=1280,height=720,framerate=30/1 "
+        "! x264enc tune=zerolatency key-int-max=%d"
+        "  bitrate=10000 "            /* 5 Mbps (High quality) */
+        "  speed-preset=superfast "  /* Better than ultrafast */
+        "  pass=qual quantizer=20 "  /* Constant Quality mode */
         "! h264parse "
         "! mp4mux "
         "! filesink location=%s",
@@ -241,8 +244,8 @@ static void test_reference(void)
 
     start_pipeline("TEST REFERENCE: Normal recording (No Plugin)");
     
-    g_print("-> Recording 30s...\n");
-    sleep(30);
+    g_print("-> Recording 10s...\n");
+    sleep(10);
 
     stop_pipeline();
     cleanup();
@@ -258,9 +261,10 @@ static void test_all(void)
     g_print("\n===== RUNNING ALL PREBUFFER TESTS =====\n");
     test_reference();
     test_basic();
-    // test_disabled();
-    // test_short();
-    // test_nokey();
+    test_disabled();
+    test_short();
+    test_nokey();
+    test_multi_cycle();
 
     g_print("\n===== ALL TESTS COMPLETED =====\n");
 }
@@ -288,7 +292,7 @@ int main(int argc, char *argv[])
     else if (!strcmp(argv[1], "cycle")) /* Added manual run option */
         test_multi_cycle();
     else if (!strcmp(argv[1], "reference"))
-        test_multi_cycle();
+        test_reference();
     else if (!strcmp(argv[1], "all"))
         test_all();
     else {
