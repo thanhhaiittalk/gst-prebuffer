@@ -27,10 +27,14 @@ static void build_pipeline(const char *outfile, int keyint)
     gchar desc[1024];
 
     snprintf(desc, sizeof(desc),
-        "videotestsrc is-live=true "
-        "! x264enc tune=zerolatency key-int-max=%d "
-        "! h264parse"
-        "! prebuffer name=pb mode=pre-record duration=5 "
+       "videotestsrc is-live=true pattern=ball "
+        /* Force Full HD and 30 FPS here: */
+        "! video/x-raw,width=720,height=540,framerate=30/1 "
+       /* CHANGE 1: force 'aud' (Access Unit Delimiter) to help player find boundaries */
+        "! x264enc tune=zerolatency key-int-max=%d speed-preset=ultrafast aud=true "
+        /* CHANGE 2: config-interval=-1 forces SPS/PPS headers at every Keyframe */
+        "! h264parse config-interval=-1 "
+        "! prebuffer name=pb mode=pre-record duration=30 "
         "! mp4mux "
         "! filesink location=%s",
         keyint, outfile);
@@ -107,12 +111,12 @@ static void test_basic(void)
 {
     build_pipeline("out_basic.mp4", 30);
 
-    start_pipeline("TEST BASIC: PRE-RECORD 5s");
-    sleep(5);
+    start_pipeline("TEST BASIC: PRE-RECORD");
+    sleep(10);
 
     g_print("-> RECORD START\n");
     g_object_set(prebuffer, "mode", 2 /* RECORD */, NULL);
-    sleep(5);
+    sleep(15);
 
     g_print("-> RECORD STOP\n");
     g_object_set(prebuffer, "mode", 1 /* PRE_RECORD */, NULL);
@@ -184,6 +188,67 @@ static void test_nokey(void)
     stop_pipeline();
     cleanup();
 }
+
+static void test_multi_cycle(void)
+{
+    build_pipeline("out_multi_cycle.mp4", 30);
+    start_pipeline("TEST MULTI-CYCLE: Record twice in one session");
+    
+    /* Cycle 1 */
+    g_print("-> Cycle 1: Recording...\n");
+    g_object_set(prebuffer, "mode", 2 /* RECORD */, NULL);
+    sleep(3);
+    g_print("-> Cycle 1: Stop (Pre-record)\n");
+    g_object_set(prebuffer, "mode", 1 /* PRE_RECORD */, NULL);
+    sleep(2);
+
+    /* Cycle 2 */
+    g_print("-> Cycle 2: Recording again...\n");
+    g_object_set(prebuffer, "mode", 2 /* RECORD */, NULL);
+    sleep(3);
+    g_print("-> Cycle 2: Stop\n");
+    g_object_set(prebuffer, "mode", 1 /* PRE_RECORD */, NULL);
+    sleep(1);
+
+    stop_pipeline(); // Use your updated stop_pipeline_eos()
+    cleanup();
+}
+
+/* NEW: Builder WITHOUT prebuffer (Direct connection) */
+static void build_reference_pipeline(const char *outfile, int keyint)
+{
+    gchar desc[1024];
+
+    /* Note: We removed '! prebuffer ...' and linked h264parse directly to mp4mux */
+    snprintf(desc, sizeof(desc),
+       "videotestsrc is-live=true pattern=ball "
+        "! video/x-raw,width=720,height=540,framerate=30/1 "
+        "! x264enc tune=zerolatency key-int-max=%d speed-preset=ultrafast "
+        "! h264parse "
+        "! mp4mux "
+        "! filesink location=%s",
+        keyint, outfile);
+
+    pipeline = gst_parse_launch(desc, NULL);
+    /* prebuffer remains NULL here */
+    prebuffer = NULL; 
+}
+
+/* NEW CASE: Reference recording without plugin */
+static void test_reference(void)
+{
+    build_reference_pipeline("out_reference.mp4", 30);
+
+    start_pipeline("TEST REFERENCE: Normal recording (No Plugin)");
+    
+    g_print("-> Recording 30s...\n");
+    sleep(30);
+
+    stop_pipeline();
+    cleanup();
+}
+
+
 /* -------------------------------------------------- */
 /* Run all tests                                      */
 /* -------------------------------------------------- */
@@ -191,11 +256,11 @@ static void test_nokey(void)
 static void test_all(void)
 {
     g_print("\n===== RUNNING ALL PREBUFFER TESTS =====\n");
-
+    test_reference();
     test_basic();
-    test_disabled();
-    test_short();
-    test_nokey();
+    // test_disabled();
+    // test_short();
+    // test_nokey();
 
     g_print("\n===== ALL TESTS COMPLETED =====\n");
 }
@@ -220,6 +285,10 @@ int main(int argc, char *argv[])
         test_short();
     else if (!strcmp(argv[1], "nokey"))
         test_nokey();
+    else if (!strcmp(argv[1], "cycle")) /* Added manual run option */
+        test_multi_cycle();
+    else if (!strcmp(argv[1], "reference"))
+        test_multi_cycle();
     else if (!strcmp(argv[1], "all"))
         test_all();
     else {

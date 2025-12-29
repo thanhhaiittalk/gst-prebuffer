@@ -31,9 +31,6 @@ typedef struct _GstPrebuffer {
     guint         duration_sec;
     gdouble fps;
 
-    gboolean seen_keyframe;
-
-
     /* ring buffer state */
     FrameRing ring;
 

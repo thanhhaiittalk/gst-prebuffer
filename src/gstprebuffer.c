@@ -193,7 +193,6 @@ static void gst_prebuffer_init(GstPrebuffer *self)
 
     self->flush_pending = FALSE;
     self->buffering_enabled = TRUE;
-    self->seen_keyframe = FALSE;
 
     /* SAFE DEFAULT INIT */
     frame_ring_init(&self->ring,
@@ -276,7 +275,6 @@ static gboolean gst_prebuffer_start(GstBaseTransform *trans)
 
     self->flush_pending = FALSE;
     self->buffering_enabled = (self->mode == PREBUFFER_MODE_PRE_RECORD);
-    self->seen_keyframe = FALSE;
 
     frame_ring_clear(&self->ring);
 
@@ -309,7 +307,7 @@ static void gst_prebuffer_apply_mode_transition(GstPrebuffer *self,
     /* No-op safety */
     if (old_mode == new_mode)
         return;
-    g_print("gst_prebuffer_apply_mode_transition\n");
+
     /* --------------------------------------------------
      * PRE_RECORD → RECORD
      * -------------------------------------------------- */
@@ -395,15 +393,6 @@ static GstFlowReturn gst_prebuffer_transform_ip(GstBaseTransform *base,
 
     /* 2. Track Keyframes */
     gboolean is_keyframe = !GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_DELTA_UNIT);
-    if (is_keyframe) self->seen_keyframe = TRUE;
-
-    if (self->seen_keyframe)
-    {
-        GstPad *srcpad = GST_BASE_TRANSFORM_SRC_PAD(base);
-
-        /* Push the final frame of the recording */
-        gst_pad_push(srcpad, gst_buffer_ref(buf));
-    }
 
     /* 4. Handle Current Mode */
     switch (cur_mode) {
@@ -421,14 +410,22 @@ static GstFlowReturn gst_prebuffer_transform_ip(GstBaseTransform *base,
         case PREBUFFER_MODE_RECORD:
             /* Flush pending buffers if needed */
             if (self->flush_pending) {
+
                 GList *start = frame_ring_get_from_last_keyframe(&self->ring);
                 if (start) {
                     for (GList *l = start; l; l = l->next) {
                         PrebufferFrame *f = l->data;
+
                         gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(base), 
                                      gst_buffer_ref(f->buffer));
+
                     }
                 }
+
+                /* IMPORTANT: Ensure the Live buffer doesn't look like a "cut" to the decoder */
+                /* If your ring buffer implementation accidentally sets DISCONT, clear it here */
+                GST_BUFFER_FLAG_UNSET(buf, GST_BUFFER_FLAG_DISCONT);
+
                 frame_ring_clear(&self->ring);
                 self->flush_pending = FALSE;
             }
