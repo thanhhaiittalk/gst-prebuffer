@@ -217,24 +217,42 @@ static void test_multi_cycle(void)
 /* NEW: Builder WITHOUT prebuffer (Direct connection) */
 static void build_reference_pipeline(const char *outfile, int keyint)
 {
-    gchar desc[1024];
+    gchar desc[2048];
 
-    /* Note: We removed '! prebuffer ...' and linked h264parse directly to mp4mux */
+    /*
+     * Reference pipeline WITHOUT prebuffer
+     * - videotestsrc + audiotestsrc
+     * - H.264 + AAC
+     * - MP4 output
+     */
     snprintf(desc, sizeof(desc),
-       "videotestsrc is-live=true pattern=snow "
+        /* -------- VIDEO -------- */
+        "videotestsrc is-live=true pattern=snow "
         "! video/x-raw,width=1280,height=720,framerate=30/1 "
-        "! x264enc tune=zerolatency key-int-max=%d"
-        "  bitrate=10000 "            /* 5 Mbps (High quality) */
-        "  speed-preset=superfast "  /* Better than ultrafast */
-        "  pass=qual quantizer=20 "  /* Constant Quality mode */
-        "! h264parse "
-        "! mp4mux "
+        "! x264enc tune=zerolatency "
+        "  key-int-max=%d "
+        "  speed-preset=superfast "
+        "  bitrate=5000 "
+        "! h264parse config-interval=-1 "
+        "! queue "
+        "! mux. "
+
+        /* -------- AUDIO -------- */
+        "audiotestsrc is-live=true wave=pink-noise volume=0.2 "
+        "! audioconvert "
+        "! audioresample "
+        "! voaacenc bitrate=128000 "
+        "! queue "
+        "! mux. "
+
+        /* -------- MUX + FILE -------- */
+        "mp4mux name=mux "
         "! filesink location=%s",
-        keyint, outfile);
+        keyint, outfile
+    );
 
     pipeline = gst_parse_launch(desc, NULL);
-    /* prebuffer remains NULL here */
-    prebuffer = NULL; 
+    prebuffer = NULL; /* reference test has no prebuffer */
 }
 
 /* NEW CASE: Reference recording without plugin */
@@ -242,7 +260,7 @@ static void test_reference(void)
 {
     build_reference_pipeline("out_reference.mp4", 30);
 
-    start_pipeline("TEST REFERENCE: Normal recording (No Plugin)");
+    start_pipeline("TEST REFERENCE: Normal recording (No Plugin)(Video + Audio)");
     
     g_print("-> Recording 10s...\n");
     sleep(10);

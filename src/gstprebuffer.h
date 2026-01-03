@@ -1,49 +1,102 @@
 #ifndef __GST_PREBUFFER_H__
 #define __GST_PREBUFFER_H__
 
-#include <gst/base/gstbasetransform.h>
+#include <gst/gst.h>
 #include "frame_ring.h"
 
 G_BEGIN_DECLS
 
+/* ------------------------------------------------------------------
+ * Type macros
+ * ------------------------------------------------------------------ */
+
 #define GST_TYPE_PREBUFFER (gst_prebuffer_get_type())
 #define GST_PREBUFFER(obj) \
     (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_PREBUFFER, GstPrebuffer))
+#define GST_PREBUFFER_CLASS(klass) \
+    (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_PREBUFFER, GstPrebufferClass))
+#define GST_IS_PREBUFFER(obj) \
+    (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_PREBUFFER))
+#define GST_IS_PREBUFFER_CLASS(klass) \
+    (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_PREBUFFER))
 
-/* Enum definition */
+/* ------------------------------------------------------------------
+ * Mode enum
+ * ------------------------------------------------------------------ */
+
 typedef enum {
     PREBUFFER_MODE_DISABLED = 0,
     PREBUFFER_MODE_PRE_RECORD,
     PREBUFFER_MODE_RECORD
 } PrebufferMode;
 
+/* ------------------------------------------------------------------
+ * Stream type (pad identification)
+ * ------------------------------------------------------------------ */
+
+typedef enum {
+    PREBUFFER_STREAM_VIDEO = 0,
+    PREBUFFER_STREAM_AUDIO
+} PrebufferStreamType;
+
+/* ------------------------------------------------------------------
+ * Instance structure
+ * ------------------------------------------------------------------ */
+
 typedef struct _GstPrebuffer {
-    GstBaseTransform parent;
+    GstElement parent;
 
-    GMutex        lock;
+    /* Pads */
+    GstPad *video_sink;   /* request pad */
+    GstPad *audio_sink;   /* request pad */
+    GstPad *src;          /* always pad */
 
-    PrebufferMode mode;          // current mode
-    PrebufferMode pending_mode;  // requested mode (optional but recommended)
+    guint video_pad_count;
+    guint audio_pad_count;
 
-    gboolean      flush_pending;   /* need to flush pre-record buffer */
-    gboolean      buffering_enabled;
+    /* Thread safety */
+    GMutex lock;
 
-    guint         duration_sec;
-    gdouble fps;
+    /* Mode state */
+    PrebufferMode mode;
+    PrebufferMode pending_mode;
 
-    /* ring buffer state */
-    FrameRing ring;
+    gboolean flush_pending;
+
+    /* Configuration */
+    guint duration_sec;
+
+    /* Sync / timing */
+    GstClockTime record_start_pts;
+    gboolean record_start_pts_valid;
+
+    /* Ring buffers */
+    FrameRing video_ring;
+    FrameRing audio_ring;
+
+    gboolean video_ring_inited;
+    gboolean audio_ring_inited;
+
 
 } GstPrebuffer;
 
+/* ------------------------------------------------------------------
+ * Class structure
+ * ------------------------------------------------------------------ */
+
 typedef struct _GstPrebufferClass {
-    GstBaseTransformClass parent_class;
+    GstElementClass parent_class;
 } GstPrebufferClass;
 
-/* GType for the enum */
+/* ------------------------------------------------------------------
+ * GType
+ * ------------------------------------------------------------------ */
+
 #define PREBUFFER_TYPE_MODE (prebuffer_mode_get_type())
+
 GType gst_prebuffer_get_type(void);
+GType prebuffer_mode_get_type(void);
 
 G_END_DECLS
 
-#endif
+#endif /* __GST_PREBUFFER_H__ */
