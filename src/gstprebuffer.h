@@ -49,7 +49,9 @@ typedef struct _GstPrebuffer {
     /* Pads */
     GstPad *video_sink;   /* request pad */
     GstPad *audio_sink;   /* request pad */
-    GstPad *src;          /* always pad */
+    /* Sources (Outputs) */
+    GstPad *video_src;     
+    GstPad *audio_src;     
 
     guint video_pad_count;
     guint audio_pad_count;

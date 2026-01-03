@@ -14,32 +14,35 @@ enum {
  * Pad templates
  * ============================================================ */
 
-/* Request sink pads: audio + video */
-static GstStaticPadTemplate audio_sink_template =
-GST_STATIC_PAD_TEMPLATE(
-    "audio_sink_%u",
+/* ==================== SINK TEMPLATES (INPUT) ==================== */
+static GstStaticPadTemplate video_sink_template = GST_STATIC_PAD_TEMPLATE(
+    "video_sink",           /* Name */
     GST_PAD_SINK,
-    GST_PAD_REQUEST,
+    GST_PAD_ALWAYS,         /* Changed to ALWAYS for simplicity */
+    GST_STATIC_CAPS("video/x-h264")
+);
+
+static GstStaticPadTemplate audio_sink_template = GST_STATIC_PAD_TEMPLATE(
+    "audio_sink",           /* Name */
+    GST_PAD_SINK,
+    GST_PAD_ALWAYS,         /* Changed to ALWAYS for simplicity */
     GST_STATIC_CAPS("audio/mpeg, mpegversion=(int)4")
 );
 
 
-static GstStaticPadTemplate video_sink_template =
-GST_STATIC_PAD_TEMPLATE(
-    "video_sink_%u",
-    GST_PAD_SINK,
-    GST_PAD_REQUEST,
+/* ==================== SOURCE TEMPLATES (OUTPUT) ==================== */
+static GstStaticPadTemplate video_src_template = GST_STATIC_PAD_TEMPLATE(
+    "video_src",            /* Name matches sink type */
+    GST_PAD_SRC,
+    GST_PAD_ALWAYS,         /* Always exists */
     GST_STATIC_CAPS("video/x-h264")
 );
 
-
-/* Single src pad */
-static GstStaticPadTemplate src_template =
-GST_STATIC_PAD_TEMPLATE(
-    "src",
+static GstStaticPadTemplate audio_src_template = GST_STATIC_PAD_TEMPLATE(
+    "audio_src",            /* Name matches sink type */
     GST_PAD_SRC,
-    GST_PAD_ALWAYS,
-    GST_STATIC_CAPS_ANY
+    GST_PAD_ALWAYS,         /* Always exists */
+    GST_STATIC_CAPS("audio/mpeg, mpegversion=(int)4")
 );
 
 /* ============================================================
@@ -147,17 +150,14 @@ static void gst_prebuffer_class_init(GstPrebufferClass *klass)
         "You");
 
     /* Pads */
-    gst_element_class_add_pad_template(element_class,
-        gst_static_pad_template_get(&video_sink_template));
-    gst_element_class_add_pad_template(element_class,
-        gst_static_pad_template_get(&audio_sink_template));
+    /* Add SINK templates */
+    gst_element_class_add_pad_template(element_class, gst_static_pad_template_get(&video_sink_template));
+    gst_element_class_add_pad_template(element_class, gst_static_pad_template_get(&audio_sink_template));
 
-    gst_element_class_add_pad_template(
-        element_class,
-        gst_static_pad_template_get(&src_template));
+    /* Add SOURCE templates */
+    gst_element_class_add_pad_template(element_class, gst_static_pad_template_get(&video_src_template));
+    gst_element_class_add_pad_template(element_class, gst_static_pad_template_get(&audio_src_template));
 
-    element_class->request_new_pad = gst_prebuffer_request_new_pad;
-    element_class->release_pad     = gst_prebuffer_release_pad;
     element_class->change_state = gst_prebuffer_change_state;
 }
 
@@ -181,93 +181,28 @@ static void gst_prebuffer_init(GstPrebuffer *self)
     self->video_pad_count = 0;
     self->audio_pad_count = 0;
 
-    // frame_ring_init(&self->video_ring, 300);
-    // frame_ring_init(&self->audio_ring, 300);
     self->video_ring_inited = FALSE;
     self->audio_ring_inited = FALSE;
 
-    /* src pad */
-    self->src = gst_pad_new_from_static_template(&src_template, "src");
-    gst_pad_set_event_function(self->src, gst_prebuffer_event);
-    gst_element_add_pad(GST_ELEMENT(self), self->src);
+    /* 1. Create VIDEO SINK */
+    self->video_sink = gst_pad_new_from_static_template(&video_sink_template, "video_sink");
+    gst_pad_set_chain_function(self->video_sink, gst_prebuffer_video_chain);
+    gst_element_add_pad(GST_ELEMENT(self), self->video_sink);
+
+    /* 2. Create VIDEO SRC */
+    self->video_src = gst_pad_new_from_static_template(&video_src_template, "video_src");
+    gst_element_add_pad(GST_ELEMENT(self), self->video_src);
+
+    /* 3. Create AUDIO SINK */
+    self->audio_sink = gst_pad_new_from_static_template(&audio_sink_template, "audio_sink");
+    gst_pad_set_chain_function(self->audio_sink, gst_prebuffer_audio_chain); // Specific Audio Chain
+    gst_pad_set_event_function(self->audio_sink, gst_prebuffer_sink_event);
+    gst_element_add_pad(GST_ELEMENT(self), self->audio_sink);
+
+    /* 4. Create AUDIO SRC (Fixed) */
+    self->audio_src = gst_pad_new_from_static_template(&audio_src_template, "audio_src");
+    gst_element_add_pad(GST_ELEMENT(self), self->audio_src);
 }
-
-/* ============================================================
- * Pad creation
- * ============================================================ */
-static GstPad * gst_prebuffer_request_new_pad(GstElement *element,
-                              GstPadTemplate *templ,
-                              const gchar *name,
-                              const GstCaps *caps)
-{
-    GstPrebuffer *self = GST_PREBUFFER(element);
-    GstPad *pad;
-    gchar *pad_name = NULL;
-
-    g_mutex_lock(&self->lock);
-
-    if (templ == gst_element_class_get_pad_template(
-                    GST_ELEMENT_CLASS(G_OBJECT_GET_CLASS(element)),
-                    "video_sink_%u")) {
-
-        /* Enforce max 1 video pad if desired */
-        if (self->video_sink) {
-            g_mutex_unlock(&self->lock);
-            return NULL;
-        }
-
-        pad_name = g_strdup_printf("video_sink_%u",
-                                   self->video_pad_count++);
-
-        pad = gst_pad_new_from_template(templ, pad_name);
-        gst_pad_set_chain_function(pad, gst_prebuffer_video_chain);
-        self->video_sink = pad;
-
-    } else {
-
-        /* Enforce max 1 audio pad if desired */
-        if (self->audio_sink) {
-            g_mutex_unlock(&self->lock);
-            return NULL;
-        }
-
-        pad_name = g_strdup_printf("audio_sink_%u",
-                                   self->audio_pad_count++);
-
-        pad = gst_pad_new_from_template(templ, pad_name);
-
-        gst_pad_set_chain_function(pad, gst_prebuffer_audio_chain);
-        gst_pad_set_event_function(pad, gst_prebuffer_sink_event);
-        
-        self->audio_sink = pad;
-    }
-
-    gst_pad_set_event_function(pad, gst_prebuffer_event);
-    gst_element_add_pad(element, pad);
-
-    g_free(pad_name);
-    g_mutex_unlock(&self->lock);
-
-    return pad;
-}
-
-
-static void gst_prebuffer_release_pad(GstElement *element, GstPad *pad)
-{
-    GstPrebuffer *self = GST_PREBUFFER(element);
-
-    g_mutex_lock(&self->lock);
-
-    if (pad == self->video_sink)
-        self->video_sink = NULL;
-    else if (pad == self->audio_sink)
-        self->audio_sink = NULL;
-
-    g_mutex_unlock(&self->lock);
-
-    gst_element_remove_pad(element, pad);
-}
-
 
 /* -------------------------- set_property -------------------------- */
 static void gst_prebuffer_set_property(GObject *object,
@@ -365,21 +300,6 @@ static GstStateChangeReturn gst_prebuffer_change_state(GstElement *element,
     }
 
     return ret;
-}
-
-/* ============================================================
- * Event handling
- * ============================================================ */
-static gboolean gst_prebuffer_event(GstPad *pad, GstObject *parent, GstEvent *event)
-{
-    GstPrebuffer *self = GST_PREBUFFER(parent);
-
-    switch (GST_EVENT_TYPE(event)) {
-    case GST_EVENT_EOS:
-        return gst_pad_push_event(self->src, event);
-    default:
-        return gst_pad_push_event(self->src, event);
-    }
 }
 
 /* ============================================================
@@ -503,7 +423,7 @@ static GstFlowReturn gst_prebuffer_video_chain(GstPad *pad,
         if (do_flush) {
             for (GList *l = flush_list; l; l = l->next) {
                 PrebufferFrame *f = l->data;
-                gst_pad_push(self->src,
+                gst_pad_push(self->video_src,
                              gst_buffer_ref(f->buffer));
             }
             g_list_free(flush_list);
@@ -513,12 +433,12 @@ static GstFlowReturn gst_prebuffer_video_chain(GstPad *pad,
         }
 
         /* Passthrough live video */
-        return gst_pad_push(self->src, buf);
+        return gst_pad_push(self->video_src, buf);;
 
     case PREBUFFER_MODE_DISABLED:
         g_mutex_unlock(&self->lock);
         /* Full passthrough */
-        return gst_pad_push(self->src, buf);
+        return gst_pad_push(self->video_src, buf);;
     }
 
     g_mutex_unlock(&self->lock);
@@ -595,7 +515,7 @@ static GstFlowReturn gst_prebuffer_audio_chain(GstPad *pad,
             for (GList *l = flush_list; l; l = l->next) {
                 PrebufferFrame *f = l->data;
                 if (GST_BUFFER_PTS(f->buffer) >= start_pts) {
-                    gst_pad_push(self->src,
+                    gst_pad_push(self->audio_src,
                                  gst_buffer_ref(f->buffer));
                 }
             }
@@ -603,12 +523,12 @@ static GstFlowReturn gst_prebuffer_audio_chain(GstPad *pad,
         }
 
         /* Passthrough current audio */
-        return gst_pad_push(self->src, buf);
+        return gst_pad_push(self->audio_src, buf);
 
     case PREBUFFER_MODE_DISABLED:
         g_mutex_unlock(&self->lock);
         /* Full passthrough */
-        return gst_pad_push(self->src, buf);
+        return gst_pad_push(self->audio_src, buf);
     }
 
     g_mutex_unlock(&self->lock);
@@ -653,29 +573,51 @@ static gboolean gst_prebuffer_sink_event(GstPad *pad,
             self->video_ring_inited = TRUE;
         }
 
-        /* ================= AUDIO ================= */
-        else if (g_str_has_prefix(name, "audio/") &&
-                 !self->audio_ring_inited) {
+        /* ================= AUDIO (Updated for AAC) ================= */
+        else if (g_str_has_prefix(name, "audio/") && !self->audio_ring_inited) {
 
             gint rate = 0;
-            guint audio_samples = 0;
+            guint audio_slots = 0;
+            
+            /* AAC usually packs 1024 samples per buffer/frame */
+            const guint SAMPLES_PER_AAC_FRAME = 1024; 
 
             if (gst_structure_get_int(s, "rate", &rate) && rate > 0) {
-                audio_samples = rate * self->duration_sec;
+                
+                /* Calculate buffers per second: Rate / 1024 */
+                /* e.g., 48000 / 1024 = 46.8 -> 47 buffers/sec */
+                guint buffers_per_sec = (rate + SAMPLES_PER_AAC_FRAME - 1) / SAMPLES_PER_AAC_FRAME;
+
+                audio_slots = buffers_per_sec * self->duration_sec;
+
             } else {
-                /* fallback: 48 kHz */
-                audio_samples = 48000 * self->duration_sec;;
+                /* Fallback: If rate is unknown, 50 buffers/sec covers 
+                 * almost all AAC rates (up to 48kHz) safely. */
+                audio_slots = 50 * self->duration_sec;
             }
 
-            frame_ring_init(&self->audio_ring, audio_samples);
+            /* Add a 20% safety margin for jitter or header buffers */
+            audio_slots += (audio_slots * 20) / 100;
+
+            GST_INFO_OBJECT(self, "Initializing Audio Ring for AAC: %u slots (~%u buffers/sec for %us)", 
+                            audio_slots, (audio_slots / self->duration_sec), self->duration_sec);
+
+            frame_ring_init(&self->audio_ring, audio_slots);
             self->audio_ring_inited = TRUE;
         }
 
         g_mutex_unlock(&self->lock);
     }
 
-    /* Always forward the event */
-    return gst_pad_push_event(self->src, event);
+    /* Forward Event to the correct source */
+    if (pad == self->video_sink) {
+        return gst_pad_push_event(self->video_src, event);
+    } 
+    else if (pad == self->audio_sink) {
+        return gst_pad_push_event(self->audio_src, event);
+    }
+    
+    return FALSE;
 }
 
 /* -------------------------- Plugin init -------------------------- */
